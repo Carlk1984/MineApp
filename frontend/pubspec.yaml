@@ -1,0 +1,52 @@
+name: mine_kpi_frontend
+description: Mine KPI tracking mobile and web application
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  http: ^1.1.0
+  
+  provider: ^6.1.1
+  
+  go_router: ^12.1.3
+  
+  shared_preferences: ^2.2.2
+  
+  json_annotation: ^4.8.1
+  
+  cupertino_icons: ^1.0.6
+  
+  flutter_secure_storage: ^9.0.0
+  
+  fl_chart: ^0.65.0
+  
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  
+  build_runner: ^2.4.7
+  json_serializable: ^6.7.1
+  
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/images/
+    - assets/icons/
+  
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: fonts/Roboto-Regular.ttf
+        - asset: fonts/Roboto-Bold.ttf
+          weight: 700
