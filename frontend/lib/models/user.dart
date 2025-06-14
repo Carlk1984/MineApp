@@ -13,7 +13,7 @@ class User {
   @JsonKey(name: 'created_at')
   final DateTime? createdAt;
 
-  const User({
+  const  User({
     required this.id,
     required this.name,
     required this.email,
@@ -33,4 +33,15 @@ class User {
   bool get canApproveRecords => isManager || isSupervisor || isAdmin;
   bool get canViewAllUsers => canApproveRecords;
   bool get canRegisterUsers => isAdmin;
+
+  bool canAccessModule(String requiredRole) {
+    const roleHierarchy = {
+      'operator': 1,
+      'manager': 2,
+      'supervisor': 3,
+      'admin': 4
+    };
+    
+    return (roleHierarchy[role.toLowerCase()] ?? 0) >= (roleHierarchy[requiredRole.toLowerCase()] ?? 0);
+  }
 }

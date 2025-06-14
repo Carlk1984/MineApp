@@ -88,6 +88,13 @@ class DashboardScreen extends StatelessWidget {
                 children: [
                   _buildActionCard(
                     context,
+                    'Modules',
+                    Icons.dashboard,
+                    'Access mining modules',
+                    () => context.go('/modules'),
+                  ),
+                  _buildActionCard(
+                    context,
                     'Records',
                     Icons.assignment,
                     'View and manage KPI records',
@@ -110,13 +117,6 @@ class DashboardScreen extends StatelessWidget {
                     'Analytics',
                     Icons.analytics,
                     'View KPI analytics',
-                    null,
-                  ),
-                  _buildActionCard(
-                    context,
-                    'Reports',
-                    Icons.report,
-                    'Generate reports',
                     null,
                   ),
                 ],

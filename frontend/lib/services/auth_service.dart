@@ -42,7 +42,7 @@ class AuthService extends ChangeNotifier {
 
     try {
       final response = await http.post(
-        Uri.parse('${ApiService.baseUrl}/token'),
+        Uri.parse('http://localhost:8001/token'),
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'username': email,
@@ -76,7 +76,7 @@ class AuthService extends ChangeNotifier {
 
     try {
       final response = await http.get(
-        Uri.parse('${ApiService.baseUrl}/users/me'),
+        Uri.parse('http://localhost:8001/users/me'),
         headers: {
           'Authorization': 'Bearer $_token',
           'Content-Type': 'application/json',

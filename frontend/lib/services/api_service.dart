@@ -5,7 +5,7 @@ import '../models/record.dart';
 import '../models/user.dart';
 
 class ApiService extends ChangeNotifier {
-  static const String baseUrl = 'http://localhost:8000';
+  static const String baseUrl = 'http://localhost:8001';
   
   Future<List<Record>> getRecords(String authToken) async {
     try {
@@ -104,6 +104,32 @@ class ApiService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('Reject record error: $e');
+      rethrow;
+    }
+  }
+
+  Future<Record> submitRecord(Record record) async {
+    try {
+      final recordData = {
+        'module': record.module,
+        'data': record.data,
+        'manager_on_duty': record.managerOnDuty,
+      };
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/record'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(recordData),
+      );
+
+      if (response.statusCode == 200) {
+        return Record.fromJson(jsonDecode(response.body));
+      }
+      throw Exception('Failed to submit record');
+    } catch (e) {
+      debugPrint('Submit record error: $e');
       rethrow;
     }
   }

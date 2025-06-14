@@ -3,17 +3,27 @@ import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import 'services/auth_service.dart';
 import 'services/api_service.dart';
+import 'services/hive_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/records_screen.dart';
 import 'screens/users_screen.dart';
+import 'screens/module_selection_screen.dart';
+import 'screens/module_form_screen.dart';
 
-void main() {
-  runApp(const MineKpiApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  final hiveService = HiveService();
+  await hiveService.initialize();
+  
+  runApp(MineKpiApp(hiveService: hiveService));
 }
 
 class MineKpiApp extends StatelessWidget {
-  const MineKpiApp({super.key});
+  final HiveService hiveService;
+  
+  const MineKpiApp({super.key, required this.hiveService});
 
   @override
   Widget build(BuildContext context) {
@@ -21,6 +31,7 @@ class MineKpiApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthService()),
         ChangeNotifierProvider(create: (_) => ApiService()),
+        Provider.value(value: hiveService),
       ],
       child: Consumer<AuthService>(
         builder: (context, authService, child) {
@@ -42,7 +53,7 @@ class MineKpiApp extends StatelessWidget {
       initialLocation: authService.isAuthenticated ? '/dashboard' : '/login',
       redirect: (context, state) {
         final isAuthenticated = authService.isAuthenticated;
-        final isLoginRoute = state.location == '/login';
+        final isLoginRoute = state.uri.toString() == '/login';
 
         if (!isAuthenticated && !isLoginRoute) {
           return '/login';
@@ -68,6 +79,17 @@ class MineKpiApp extends StatelessWidget {
         GoRoute(
           path: '/users',
           builder: (context, state) => const UsersScreen(),
+        ),
+        GoRoute(
+          path: '/modules',
+          builder: (context, state) => const ModuleSelectionScreen(),
+        ),
+        GoRoute(
+          path: '/module/:moduleName',
+          builder: (context, state) {
+            final moduleName = state.pathParameters['moduleName']!;
+            return ModuleFormScreen(moduleName: moduleName);
+          },
         ),
       ],
     );
