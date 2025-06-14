@@ -10,6 +10,7 @@ import 'screens/records_screen.dart';
 import 'screens/users_screen.dart';
 import 'screens/module_selection_screen.dart';
 import 'screens/module_form_screen.dart';
+import 'screens/conflict_resolution_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -90,6 +91,10 @@ class MineKpiApp extends StatelessWidget {
             final moduleName = state.pathParameters['moduleName']!;
             return ModuleFormScreen(moduleName: moduleName);
           },
+        ),
+        GoRoute(
+          path: '/conflicts',
+          builder: (context, state) => const ConflictResolutionScreen(),
         ),
       ],
     );

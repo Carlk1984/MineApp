@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import '../services/auth_service.dart';
+import '../services/hive_service.dart';
 
 class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
@@ -112,12 +113,25 @@ class DashboardScreen extends StatelessWidget {
                       );
                     },
                   ),
-                  _buildActionCard(
-                    context,
-                    'Analytics',
-                    Icons.analytics,
-                    'View KPI analytics',
-                    null,
+                  Consumer<HiveService>(
+                    builder: (context, hiveService, child) {
+                      return FutureBuilder<int>(
+                        future: hiveService.getConflictCount(),
+                        builder: (context, snapshot) {
+                          final conflictCount = snapshot.data ?? 0;
+                          return _buildConflictCard(
+                            context,
+                            'Sync Conflicts',
+                            Icons.sync_problem,
+                            conflictCount > 0 
+                                ? '$conflictCount conflicts need attention'
+                                : 'No conflicts to resolve',
+                            () => context.go('/conflicts'),
+                            conflictCount,
+                          );
+                        },
+                      );
+                    },
                   ),
                 ],
               ),
@@ -166,6 +180,76 @@ class DashboardScreen extends StatelessWidget {
                   color: Colors.grey[600],
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConflictCard(
+    BuildContext context,
+    String title,
+    IconData icon,
+    String description,
+    VoidCallback? onTap,
+    int conflictCount,
+  ) {
+    return Card(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Stack(
+            children: [
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    size: 48,
+                    color: conflictCount > 0 ? Colors.orange : Colors.grey,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    description,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+              if (conflictCount > 0)
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      conflictCount.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
