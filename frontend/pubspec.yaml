@@ -33,6 +33,10 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   path_provider: ^2.1.1
+  
+  image_picker: ^1.0.4
+  geolocator: ^10.1.0
+  signature: ^5.4.0
 
 dev_dependencies:
   flutter_test:

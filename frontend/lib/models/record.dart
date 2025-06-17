@@ -3,6 +3,24 @@ import 'package:json_annotation/json_annotation.dart';
 part 'record.g.dart';
 
 @JsonSerializable()
+class LocationData {
+  final double latitude;
+  final double longitude;
+  final double? accuracy;
+  final DateTime timestamp;
+
+  const LocationData({
+    required this.latitude,
+    required this.longitude,
+    this.accuracy,
+    required this.timestamp,
+  });
+
+  factory LocationData.fromJson(Map<String, dynamic> json) => _$LocationDataFromJson(json);
+  Map<String, dynamic> toJson() => _$LocationDataToJson(this);
+}
+
+@JsonSerializable()
 class Record {
   final String id;
   final String module;
@@ -22,6 +40,12 @@ class Record {
   final DateTime? updatedAt;
   @JsonKey(name: 'user_id')
   final String? userId;
+  @JsonKey(name: 'location_data')
+  final LocationData? locationData;
+  @JsonKey(name: 'photos')
+  final List<String>? photos;
+  @JsonKey(name: 'signature')
+  final String? signature;
 
   const Record({
     required this.id,
@@ -35,6 +59,9 @@ class Record {
     this.createdAt,
     this.updatedAt,
     this.userId,
+    this.locationData,
+    this.photos,
+    this.signature,
   });
 
   factory Record.fromJson(Map<String, dynamic> json) => _$RecordFromJson(json);
@@ -52,6 +79,9 @@ class Record {
     DateTime? createdAt,
     DateTime? updatedAt,
     String? userId,
+    LocationData? locationData,
+    List<String>? photos,
+    String? signature,
   }) {
     return Record(
       id: id ?? this.id,
@@ -65,6 +95,9 @@ class Record {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       userId: userId ?? this.userId,
+      locationData: locationData ?? this.locationData,
+      photos: photos ?? this.photos,
+      signature: signature ?? this.signature,
     );
   }
 

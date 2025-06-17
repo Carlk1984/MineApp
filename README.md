@@ -12,6 +12,11 @@ A comprehensive mining KPI tracking system with FastAPI backend and Flutter fron
 - PostgreSQL database integration
 - RESTful API for KPI data management
 - Cross-platform Flutter frontend
+- **Mobile Enhancements:**
+  - Camera/photo capture for documentation
+  - Geolocation tagging for location tracking
+  - Digital signature input for validation
+  - Offline storage of media files
 
 ## Backend Setup
 
@@ -81,12 +86,36 @@ The backend is configured for Railway deployment with:
    flutter run
    ```
 
+### Building Android APK
+1. Build release APK:
+   ```bash
+   flutter build apk --release
+   ```
+
+2. The APK will be generated at:
+   ```
+   build/app/outputs/flutter-apk/app-release.apk
+   ```
+
+### Mobile Permissions
+The app requires the following Android permissions:
+- `CAMERA` - For photo capture functionality
+- `ACCESS_FINE_LOCATION` - For GPS location tracking
+- `ACCESS_COARSE_LOCATION` - For network-based location
+- `WRITE_EXTERNAL_STORAGE` - For saving photos locally
+- `READ_EXTERNAL_STORAGE` - For accessing saved photos
+
 ### Features
 - **Authentication**: Secure login with JWT tokens
 - **Dashboard**: Overview of user role and quick actions
 - **Records Management**: Create, view, and manage KPI records
 - **User Management**: View users (role-based access)
 - **Responsive Design**: Works on mobile, tablet, and web
+- **Mobile Features**:
+  - Photo capture for equipment documentation, safety incidents, and quality control
+  - Automatic geolocation tagging with GPS coordinates
+  - Digital signature capture for operator validation
+  - Offline storage and sync of media files
 
 ## API Endpoints
 
@@ -126,6 +155,10 @@ The backend is configured for Railway deployment with:
 - GoRouter for navigation with auth guards
 - HTTP client for API communication
 - Secure storage for JWT tokens
+- **Mobile Services**:
+  - `CameraService` - Photo capture and gallery selection
+  - `LocationService` - GPS location tracking with permissions
+  - `SignatureService` - Digital signature capture and export
 
 ## Security Features
 - Password hashing with bcrypt
