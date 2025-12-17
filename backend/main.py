@@ -19,6 +19,9 @@ from auth import (
 
 from modules import register_module, list_modules
 from modules.heap_leaching import MODULE_METADATA, router as heap_leaching_router
+from modules.heap_leaching.models import (
+    HeapConfig, HeapConfigHistory, BenchmarkConfig, BenchmarkChangeLog
+)
 
 models.Base.metadata.create_all(bind=engine)
 

@@ -19,7 +19,37 @@ Design Constraints:
 """
 
 from modules.heap_leaching.metadata import MODULE_METADATA
-from modules.heap_leaching.config import HeapLeachingConfig
+from modules.heap_leaching.config import (
+    HeapLeachingConfig,
+    HeapConfigCreate,
+    HeapConfigUpdate,
+    HeapConfigResponse,
+    BenchmarkConfigCreate,
+    BenchmarkConfigUpdate,
+    BenchmarkConfigResponse,
+    BenchmarkChangeLogResponse,
+)
+from modules.heap_leaching.models import (
+    HeapConfig,
+    HeapConfigHistory,
+    BenchmarkConfig,
+    BenchmarkChangeLog,
+)
 from modules.heap_leaching.router import router
 
-__all__ = ["MODULE_METADATA", "HeapLeachingConfig", "router"]
+__all__ = [
+    "MODULE_METADATA",
+    "HeapLeachingConfig",
+    "HeapConfigCreate",
+    "HeapConfigUpdate",
+    "HeapConfigResponse",
+    "BenchmarkConfigCreate",
+    "BenchmarkConfigUpdate",
+    "BenchmarkConfigResponse",
+    "BenchmarkChangeLogResponse",
+    "HeapConfig",
+    "HeapConfigHistory",
+    "BenchmarkConfig",
+    "BenchmarkChangeLog",
+    "router",
+]
