@@ -17,6 +17,9 @@ from auth import (
     Token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES
 )
 
+from modules import register_module, list_modules
+from modules.heap_leaching import MODULE_METADATA, router as heap_leaching_router
+
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Mine KPI Backend", version="1.0.0")
@@ -28,6 +31,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+register_module(MODULE_METADATA["module_id"], MODULE_METADATA)
+
+app.include_router(heap_leaching_router, prefix="/api/v1/modules", tags=["Modules"])
 
 class Role(str, Enum):
     operator = "operator"
@@ -244,3 +251,12 @@ async def get_record(
         approved_by=record.approved_by,
         timestamp=record.timestamp
     )
+
+
+@app.get("/api/v1/modules", tags=["Modules"])
+async def get_registered_modules():
+    """List all registered modules in the platform."""
+    return {
+        "modules": list_modules(),
+        "count": len(list_modules()),
+    }
