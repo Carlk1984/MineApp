@@ -212,3 +212,51 @@ class DailyControlLog(Base):
         CheckConstraint("pls_au_mgL >= 0", name="check_pls_au_non_negative"),
         CheckConstraint("pond_freeboard_m >= 0", name="check_pond_freeboard_non_negative"),
     )
+
+
+class ControlRuleLog(Base):
+    """
+    Control rule log for hard stops and soft alerts.
+    
+    Records are IMMUTABLE - logs all triggered control rules with full audit trail.
+    
+    Rule Types:
+    - HARD_STOP: Blocks submission/operation (e.g., HS-1, HS-2)
+    - SOFT_ALERT: Flags issue but allows submission (e.g., SA-1, SA-2, SA-3, SA-4)
+    
+    Each log entry includes:
+    - Rule ID (e.g., HS-1, SA-1)
+    - Rule type (HARD_STOP or SOFT_ALERT)
+    - Triggering value(s)
+    - Benchmark value(s)
+    - Date and DailyControlLog reference
+    """
+    __tablename__ = "control_rule_logs"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    heap_config_id = Column(String(36), ForeignKey("heap_configs.id"), nullable=False, index=True)
+    daily_control_log_id = Column(String(36), ForeignKey("daily_control_logs.id"), nullable=True, index=True)
+    
+    rule_id = Column(String(20), nullable=False, index=True)
+    rule_type = Column(String(20), nullable=False, index=True)
+    rule_message = Column(Text, nullable=False)
+    
+    triggering_field = Column(String(100), nullable=False)
+    triggering_value = Column(Float, nullable=False)
+    benchmark_field = Column(String(100), nullable=True)
+    benchmark_value = Column(Float, nullable=True)
+    
+    log_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    
+    heap_config = relationship("HeapConfig", foreign_keys=[heap_config_id])
+    daily_control_log = relationship("DailyControlLog", foreign_keys=[daily_control_log_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    
+    __table_args__ = (
+        CheckConstraint(
+            "rule_type IN ('HARD_STOP', 'SOFT_ALERT')",
+            name="check_rule_type_valid"
+        ),
+    )

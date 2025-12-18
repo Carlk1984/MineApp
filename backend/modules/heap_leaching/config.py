@@ -344,6 +344,78 @@ class DailyControlLogResponse(BaseModel):
         from_attributes = True
 
 
+class DailyControlLogWithAlertsResponse(BaseModel):
+    """
+    Response schema for DailyControlLog with any triggered soft alerts.
+    
+    Returned after successful submission to show the log and any alerts generated.
+    """
+    
+    daily_control_log: DailyControlLogResponse
+    alerts: List["ControlRuleLogResponse"] = Field(
+        default=[],
+        description="List of soft alerts triggered by this submission"
+    )
+    calculated_values: dict = Field(
+        default={},
+        description="Calculated values used for rule evaluation"
+    )
+
+
+class ControlRuleLogResponse(BaseModel):
+    """
+    Response schema for ControlRuleLog.
+    
+    Records are immutable - logs all triggered control rules.
+    """
+    
+    id: str
+    heap_config_id: str
+    daily_control_log_id: Optional[str]
+    rule_id: str
+    rule_type: str
+    rule_message: str
+    triggering_field: str
+    triggering_value: float
+    benchmark_field: Optional[str]
+    benchmark_value: Optional[float]
+    log_date: date
+    created_at: datetime
+    created_by: str
+    
+    class Config:
+        from_attributes = True
+
+
+class HardStopError(BaseModel):
+    """
+    Response schema for hard stop errors.
+    
+    Returned when a hard stop rule is triggered and submission is blocked.
+    """
+    
+    rule_id: str = Field(..., description="Rule identifier (e.g., HS-1, HS-2)")
+    rule_type: str = Field(default="HARD_STOP", description="Always HARD_STOP")
+    message: str = Field(..., description="Human-readable error message")
+    triggering_field: str = Field(..., description="Field that triggered the rule")
+    triggering_value: float = Field(..., description="Value that triggered the rule")
+    benchmark_field: str = Field(..., description="Benchmark field used for comparison")
+    benchmark_value: float = Field(..., description="Benchmark value used for comparison")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "rule_id": "HS-1",
+                "rule_type": "HARD_STOP",
+                "message": "Unsafe pH level – cyanide stability risk. Correct before leaching.",
+                "triggering_field": "applied_ph",
+                "triggering_value": 9.5,
+                "benchmark_field": "ph_min",
+                "benchmark_value": 10.5
+            }
+        }
+
+
 class HeapLeachingConfig(BaseModel):
     """
     Configuration schema for Heap Leaching – Key Controls module.
