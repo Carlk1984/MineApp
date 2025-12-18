@@ -6,9 +6,13 @@ with role-based access control and change logging.
 """
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query
+from fastapi.responses import StreamingResponse, JSONResponse
 from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from datetime import datetime, date
+import csv
+import io
+import json
 
 from database import get_db
 from auth import (
@@ -1632,3 +1636,588 @@ async def list_stop_leach_overrides(
     ).order_by(StopLeachOverride.override_timestamp.desc()).offset(offset).limit(limit).all()
     
     return [StopLeachOverrideResponse.model_validate(o) for o in overrides]
+
+
+@router.get(
+    "/export/daily-logs",
+    summary="Export daily control logs",
+    description="Export daily control logs in JSON or CSV format. All authenticated users can export.",
+)
+async def export_daily_logs(
+    format: str = Query(default="json", description="Export format: json or csv"),
+    start_date: Optional[date] = Query(default=None, description="Start date filter"),
+    end_date: Optional[date] = Query(default=None, description="End date filter"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+):
+    """Export daily control logs with derived fields and alerts."""
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    query = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config.id
+    )
+    
+    if start_date:
+        query = query.filter(DailyControlLog.log_date >= start_date)
+    if end_date:
+        query = query.filter(DailyControlLog.log_date <= end_date)
+    
+    logs = query.order_by(DailyControlLog.log_date).all()
+    
+    export_data = []
+    for log in logs:
+        solution_applied_m3 = log.flow_m3_per_hr * log.irrigation_hours
+        application_rate = (log.flow_m3_per_hr * 1000) / log.area_irrigated_m2 if log.area_irrigated_m2 > 0 else None
+        pls_return_pct = (log.pls_flow_m3 / solution_applied_m3) * 100 if solution_applied_m3 > 0 else None
+        gold_in_pls_g = log.pls_au_mgL * log.pls_flow_m3
+        leach_day = (log.log_date - heap_config.leach_start_date).days + 1
+        
+        alerts = db.query(ControlRuleLog).filter(
+            ControlRuleLog.daily_control_log_id == log.id
+        ).all()
+        
+        record = {
+            "log_date": str(log.log_date),
+            "leach_day": leach_day,
+            "area_irrigated_m2": log.area_irrigated_m2,
+            "flow_m3_per_hr": log.flow_m3_per_hr,
+            "irrigation_hours": log.irrigation_hours,
+            "applied_cn_ppm": log.applied_cn_ppm,
+            "applied_ph": log.applied_ph,
+            "pls_flow_m3": log.pls_flow_m3,
+            "pls_au_mgL": log.pls_au_mgL,
+            "pond_freeboard_m": log.pond_freeboard_m,
+            "solution_applied_m3": solution_applied_m3,
+            "application_rate_L_m2_hr": application_rate,
+            "pls_return_pct": pls_return_pct,
+            "gold_in_pls_g": gold_in_pls_g,
+            "alerts": [{"rule_id": a.rule_id, "message": a.rule_message} for a in alerts],
+            "created_at": str(log.created_at),
+            "created_by": log.created_by,
+        }
+        export_data.append(record)
+    
+    if format.lower() == "csv":
+        output = io.StringIO()
+        if export_data:
+            fieldnames = [k for k in export_data[0].keys() if k != "alerts"]
+            fieldnames.append("alert_count")
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            for record in export_data:
+                row = {k: v for k, v in record.items() if k != "alerts"}
+                row["alert_count"] = len(record["alerts"])
+                writer.writerow(row)
+        
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=daily_logs_{datetime.utcnow().strftime('%Y%m%d')}.csv"}
+        )
+    
+    return JSONResponse(content={
+        "module_id": "heap_leaching_key_controls",
+        "module_version": "1.0.0",
+        "heap_id": heap_config.heap_id,
+        "export_timestamp": datetime.utcnow().isoformat(),
+        "exported_by": current_user.id,
+        "record_count": len(export_data),
+        "data": export_data,
+    })
+
+
+@router.get(
+    "/export/weekly-summaries",
+    summary="Export weekly control summaries",
+    description="Export weekly control summaries in JSON or CSV format. All authenticated users can export.",
+)
+async def export_weekly_summaries(
+    format: str = Query(default="json", description="Export format: json or csv"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+):
+    """Export weekly control summaries with economic metrics."""
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    summaries = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.heap_config_id == heap_config.id
+    ).order_by(WeeklyControlSummary.week_start_date).all()
+    
+    alerts = db.query(ControlRuleLog).filter(
+        ControlRuleLog.heap_config_id == heap_config.id,
+        ControlRuleLog.rule_type == "WEEKLY_FLAG"
+    ).all()
+    alerts_by_date = {}
+    for alert in alerts:
+        key = str(alert.log_date)
+        if key not in alerts_by_date:
+            alerts_by_date[key] = []
+        alerts_by_date[key].append(alert)
+    
+    export_data = []
+    for summary in summaries:
+        week_alerts = alerts_by_date.get(str(summary.week_end_date), [])
+        record = {
+            "week_start_date": str(summary.week_start_date),
+            "week_end_date": str(summary.week_end_date),
+            "cn_used_kg": summary.cn_used_kg,
+            "weekly_solution_applied_m3": summary.weekly_solution_applied_m3,
+            "weekly_pls_flow_m3": summary.weekly_pls_flow_m3,
+            "weekly_gold_in_pls_g": summary.weekly_gold_in_pls_g,
+            "cumulative_gold_in_pls_g": summary.cumulative_gold_in_pls_g,
+            "contained_gold_g": summary.contained_gold_g,
+            "recovery_pct": summary.recovery_pct,
+            "cn_consumption_kgpt": summary.cn_consumption_kgpt,
+            "cn_efficiency_gpkg": summary.cn_efficiency_gpkg,
+            "is_approved": summary.is_approved,
+            "flags": [{"rule_id": a.rule_id, "message": a.rule_message} for a in week_alerts],
+            "created_at": str(summary.created_at),
+        }
+        export_data.append(record)
+    
+    if format.lower() == "csv":
+        output = io.StringIO()
+        if export_data:
+            fieldnames = [k for k in export_data[0].keys() if k != "flags"]
+            fieldnames.append("flag_count")
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            for record in export_data:
+                row = {k: v for k, v in record.items() if k != "flags"}
+                row["flag_count"] = len(record["flags"])
+                writer.writerow(row)
+        
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=weekly_summaries_{datetime.utcnow().strftime('%Y%m%d')}.csv"}
+        )
+    
+    return JSONResponse(content={
+        "module_id": "heap_leaching_key_controls",
+        "module_version": "1.0.0",
+        "heap_id": heap_config.heap_id,
+        "export_timestamp": datetime.utcnow().isoformat(),
+        "exported_by": current_user.id,
+        "record_count": len(export_data),
+        "data": export_data,
+    })
+
+
+@router.get(
+    "/export/decisions",
+    summary="Export stop-leach decisions",
+    description="Export stop-leach decisions with overrides in JSON or CSV format. All authenticated users can export.",
+)
+async def export_decisions(
+    format: str = Query(default="json", description="Export format: json or csv"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+):
+    """Export stop-leach decisions with triggered rules and overrides."""
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    decisions = db.query(StopLeachDecision).filter(
+        StopLeachDecision.heap_config_id == heap_config.id
+    ).order_by(StopLeachDecision.decision_date).all()
+    
+    export_data = []
+    for decision in decisions:
+        override = db.query(StopLeachOverride).filter(
+            StopLeachOverride.decision_id == decision.id
+        ).first()
+        
+        effective_status = decision.system_status
+        if override:
+            if override.override_action == "CONTINUE":
+                effective_status = "CONTINUE_UNDER_OVERRIDE"
+            else:
+                effective_status = "STOP_CONFIRMED_BY_MANAGEMENT"
+        
+        record = {
+            "decision_id": decision.id,
+            "decision_date": str(decision.decision_date),
+            "stop_recommendation": decision.stop_recommendation,
+            "system_status": decision.system_status,
+            "effective_status": effective_status,
+            "recovery_pct": decision.recovery_pct,
+            "cn_efficiency_gpkg": decision.cn_efficiency_gpkg,
+            "cn_consumption_kgpt": decision.cn_consumption_kgpt,
+            "cumulative_gold_in_pls_g": decision.cumulative_gold_in_pls_g,
+            "decision_reasons": decision.decision_reasons,
+            "has_override": override is not None,
+            "override_action": override.override_action if override else None,
+            "override_reason": override.override_reason if override else None,
+            "override_justification": override.override_justification_text if override else None,
+            "override_by": override.override_by if override else None,
+            "override_timestamp": str(override.override_timestamp) if override else None,
+            "created_at": str(decision.created_at),
+        }
+        export_data.append(record)
+    
+    if format.lower() == "csv":
+        output = io.StringIO()
+        if export_data:
+            fieldnames = [k for k in export_data[0].keys() if k != "decision_reasons"]
+            fieldnames.append("reason_count")
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            for record in export_data:
+                row = {k: v for k, v in record.items() if k != "decision_reasons"}
+                row["reason_count"] = len(record["decision_reasons"]) if record["decision_reasons"] else 0
+                writer.writerow(row)
+        
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=decisions_{datetime.utcnow().strftime('%Y%m%d')}.csv"}
+        )
+    
+    return JSONResponse(content={
+        "module_id": "heap_leaching_key_controls",
+        "module_version": "1.0.0",
+        "heap_id": heap_config.heap_id,
+        "export_timestamp": datetime.utcnow().isoformat(),
+        "exported_by": current_user.id,
+        "record_count": len(export_data),
+        "data": export_data,
+    })
+
+
+@router.get(
+    "/dashboard/daily",
+    summary="Daily operations dashboard",
+    description="Read-only dashboard showing daily control logs with status indicators. Access based on role.",
+)
+async def dashboard_daily(
+    start_date: Optional[date] = Query(default=None, description="Start date filter"),
+    end_date: Optional[date] = Query(default=None, description="End date filter"),
+    limit: int = Query(default=30, ge=1, le=365, description="Maximum records to return"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+):
+    """
+    Daily operations dashboard (read-only).
+    
+    Shows daily control logs with:
+    - Input values and derived calculations
+    - Status indicators (green/amber/red)
+    - Alerts and hard stops
+    
+    Access:
+    - Contractor: can view own submissions only
+    - Engineer/Manager/Admin: can view all
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    benchmark = db.query(BenchmarkConfig).filter(
+        BenchmarkConfig.heap_config_id == heap_config.id
+    ).first()
+    
+    query = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config.id
+    )
+    
+    if current_user.role == "operator":
+        query = query.filter(DailyControlLog.created_by == current_user.id)
+    
+    if start_date:
+        query = query.filter(DailyControlLog.log_date >= start_date)
+    if end_date:
+        query = query.filter(DailyControlLog.log_date <= end_date)
+    
+    logs = query.order_by(DailyControlLog.log_date.desc()).limit(limit).all()
+    
+    dashboard_data = []
+    for log in logs:
+        solution_applied_m3 = log.flow_m3_per_hr * log.irrigation_hours
+        application_rate = (log.flow_m3_per_hr * 1000) / log.area_irrigated_m2 if log.area_irrigated_m2 > 0 else None
+        pls_return_pct = (log.pls_flow_m3 / solution_applied_m3) * 100 if solution_applied_m3 > 0 else None
+        gold_in_pls_g = log.pls_au_mgL * log.pls_flow_m3
+        leach_day = (log.log_date - heap_config.leach_start_date).days + 1
+        
+        alerts = db.query(ControlRuleLog).filter(
+            ControlRuleLog.daily_control_log_id == log.id
+        ).all()
+        
+        hard_stops = [a for a in alerts if a.rule_type == "HARD_STOP"]
+        soft_alerts = [a for a in alerts if a.rule_type == "SOFT_ALERT"]
+        
+        if hard_stops:
+            overall_status = "red"
+        elif soft_alerts:
+            overall_status = "amber"
+        else:
+            overall_status = "green"
+        
+        ph_status = "green"
+        if benchmark and log.applied_ph < benchmark.ph_min:
+            ph_status = "red"
+        elif benchmark and log.applied_ph > benchmark.ph_max:
+            ph_status = "amber"
+        
+        freeboard_status = "green"
+        if benchmark and log.pond_freeboard_m < benchmark.pond_freeboard_min_m:
+            freeboard_status = "red"
+        
+        app_rate_status = "green"
+        if benchmark and application_rate:
+            if application_rate < benchmark.application_rate_min_L_m2_hr or application_rate > benchmark.application_rate_max_L_m2_hr:
+                app_rate_status = "amber"
+        
+        cn_status = "green"
+        if benchmark:
+            if log.applied_cn_ppm < benchmark.cn_min_ppm or log.applied_cn_ppm > benchmark.cn_max_ppm:
+                cn_status = "amber"
+        
+        pls_return_status = "green"
+        if benchmark and pls_return_pct and pls_return_pct < benchmark.pls_return_min_pct:
+            pls_return_status = "amber"
+        
+        gold_status = "green"
+        if log.pls_au_mgL == 0:
+            gold_status = "amber"
+        elif benchmark and log.pls_au_mgL < benchmark.pls_low_au_mgL:
+            gold_status = "amber"
+        
+        record = {
+            "log_date": str(log.log_date),
+            "leach_day": leach_day,
+            "overall_status": overall_status,
+            "inputs": {
+                "area_irrigated_m2": log.area_irrigated_m2,
+                "flow_m3_per_hr": log.flow_m3_per_hr,
+                "irrigation_hours": log.irrigation_hours,
+                "applied_cn_ppm": {"value": log.applied_cn_ppm, "status": cn_status},
+                "applied_ph": {"value": log.applied_ph, "status": ph_status},
+                "pls_flow_m3": log.pls_flow_m3,
+                "pls_au_mgL": {"value": log.pls_au_mgL, "status": gold_status},
+                "pond_freeboard_m": {"value": log.pond_freeboard_m, "status": freeboard_status},
+            },
+            "derived": {
+                "solution_applied_m3": solution_applied_m3,
+                "application_rate_L_m2_hr": {"value": application_rate, "status": app_rate_status},
+                "pls_return_pct": {"value": pls_return_pct, "status": pls_return_status},
+                "gold_in_pls_g": gold_in_pls_g,
+            },
+            "alerts": {
+                "hard_stops": [{"rule_id": a.rule_id, "message": a.rule_message} for a in hard_stops],
+                "soft_alerts": [{"rule_id": a.rule_id, "message": a.rule_message} for a in soft_alerts],
+            },
+        }
+        dashboard_data.append(record)
+    
+    return {
+        "dashboard": "daily_operations",
+        "heap_id": heap_config.heap_id,
+        "heap_tonnage_t": heap_config.heap_tonnage_t,
+        "leach_start_date": str(heap_config.leach_start_date),
+        "record_count": len(dashboard_data),
+        "data": dashboard_data,
+    }
+
+
+@router.get(
+    "/dashboard/weekly",
+    summary="Weekly summary dashboard",
+    description="Read-only dashboard showing weekly summaries with economic metrics. Engineer+ access.",
+)
+async def dashboard_weekly(
+    limit: int = Query(default=12, ge=1, le=52, description="Maximum weeks to return"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_engineer_or_above),
+):
+    """
+    Weekly summary dashboard (read-only).
+    
+    Shows weekly control summaries with:
+    - Aggregated metrics
+    - Economic indicators
+    - Status indicators (green/amber/red)
+    - Weekly flags
+    
+    Access: Engineer, Manager, Admin only
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    benchmark = db.query(BenchmarkConfig).filter(
+        BenchmarkConfig.heap_config_id == heap_config.id
+    ).first()
+    
+    summaries = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.heap_config_id == heap_config.id
+    ).order_by(WeeklyControlSummary.week_start_date.desc()).limit(limit).all()
+    
+    dashboard_data = []
+    for summary in summaries:
+        flags = db.query(ControlRuleLog).filter(
+            ControlRuleLog.heap_config_id == heap_config.id,
+            ControlRuleLog.rule_type == "WEEKLY_FLAG",
+            ControlRuleLog.log_date == summary.week_end_date,
+        ).all()
+        
+        cn_consumption_status = "green"
+        if benchmark and summary.cn_consumption_kgpt:
+            if summary.cn_consumption_kgpt > benchmark.cn_consumption_max_kgpt:
+                cn_consumption_status = "red"
+            elif summary.cn_consumption_kgpt > benchmark.cn_consumption_max_kgpt * 0.8:
+                cn_consumption_status = "amber"
+        
+        cn_efficiency_status = "green"
+        if benchmark and summary.cn_efficiency_gpkg:
+            if summary.cn_efficiency_gpkg < benchmark.cn_efficiency_min_gpkg:
+                cn_efficiency_status = "red"
+            elif summary.cn_efficiency_gpkg < benchmark.cn_efficiency_min_gpkg * 1.2:
+                cn_efficiency_status = "amber"
+        
+        recovery_status = "green"
+        if summary.recovery_pct:
+            if summary.recovery_pct < 10:
+                recovery_status = "red"
+            elif summary.recovery_pct < 30:
+                recovery_status = "amber"
+        
+        if flags:
+            overall_status = "amber"
+        else:
+            overall_status = "green"
+        
+        if cn_consumption_status == "red" or cn_efficiency_status == "red" or recovery_status == "red":
+            overall_status = "red"
+        
+        record = {
+            "week_start_date": str(summary.week_start_date),
+            "week_end_date": str(summary.week_end_date),
+            "overall_status": overall_status,
+            "aggregated": {
+                "cn_used_kg": summary.cn_used_kg,
+                "weekly_solution_applied_m3": summary.weekly_solution_applied_m3,
+                "weekly_pls_flow_m3": summary.weekly_pls_flow_m3,
+                "weekly_gold_in_pls_g": summary.weekly_gold_in_pls_g,
+            },
+            "cumulative": {
+                "cumulative_gold_in_pls_g": summary.cumulative_gold_in_pls_g,
+                "contained_gold_g": summary.contained_gold_g,
+            },
+            "economic": {
+                "recovery_pct": {"value": summary.recovery_pct, "status": recovery_status},
+                "cn_consumption_kgpt": {"value": summary.cn_consumption_kgpt, "status": cn_consumption_status},
+                "cn_efficiency_gpkg": {"value": summary.cn_efficiency_gpkg, "status": cn_efficiency_status},
+            },
+            "flags": [{"rule_id": f.rule_id, "message": f.rule_message} for f in flags],
+            "is_approved": summary.is_approved,
+        }
+        dashboard_data.append(record)
+    
+    return {
+        "dashboard": "weekly_summary",
+        "heap_id": heap_config.heap_id,
+        "heap_tonnage_t": heap_config.heap_tonnage_t,
+        "head_grade_gpt": heap_config.head_grade_gpt,
+        "record_count": len(dashboard_data),
+        "data": dashboard_data,
+    }
+
+
+@router.get(
+    "/dashboard/decisions",
+    summary="Stop-leach decisions dashboard",
+    description="Read-only dashboard showing stop-leach decisions and overrides. Engineer+ access.",
+)
+async def dashboard_decisions(
+    limit: int = Query(default=12, ge=1, le=52, description="Maximum decisions to return"),
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_engineer_or_above),
+):
+    """
+    Stop-leach decisions dashboard (read-only).
+    
+    Shows stop-leach decisions with:
+    - System recommendation (STOP/CONTINUE)
+    - Triggered rules
+    - Management overrides (if any)
+    - Effective status
+    
+    Access: Engineer, Manager, Admin only
+    Contractor cannot view this dashboard.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(status_code=404, detail="HeapConfig not found.")
+    
+    decisions = db.query(StopLeachDecision).filter(
+        StopLeachDecision.heap_config_id == heap_config.id
+    ).order_by(StopLeachDecision.decision_date.desc()).limit(limit).all()
+    
+    dashboard_data = []
+    for decision in decisions:
+        override = db.query(StopLeachOverride).filter(
+            StopLeachOverride.decision_id == decision.id
+        ).first()
+        
+        effective_status = decision.system_status
+        if override:
+            if override.override_action == "CONTINUE":
+                effective_status = "CONTINUE_UNDER_OVERRIDE"
+            else:
+                effective_status = "STOP_CONFIRMED_BY_MANAGEMENT"
+        
+        if decision.stop_recommendation == 1:
+            recommendation_status = "red"
+        else:
+            recommendation_status = "green"
+        
+        if effective_status in ["CONTINUE", "CONTINUE_UNDER_OVERRIDE"]:
+            effective_status_color = "green" if effective_status == "CONTINUE" else "amber"
+        else:
+            effective_status_color = "red"
+        
+        record = {
+            "decision_id": decision.id,
+            "decision_date": str(decision.decision_date),
+            "recommendation": {
+                "stop_recommendation": decision.stop_recommendation,
+                "status": recommendation_status,
+                "reasons": decision.decision_reasons,
+            },
+            "metrics": {
+                "recovery_pct": decision.recovery_pct,
+                "cn_efficiency_gpkg": decision.cn_efficiency_gpkg,
+                "cn_consumption_kgpt": decision.cn_consumption_kgpt,
+                "cumulative_gold_in_pls_g": decision.cumulative_gold_in_pls_g,
+            },
+            "system_status": decision.system_status,
+            "effective_status": {
+                "value": effective_status,
+                "color": effective_status_color,
+            },
+            "override": {
+                "has_override": override is not None,
+                "action": override.override_action if override else None,
+                "reason": override.override_reason if override else None,
+                "justification": override.override_justification_text if override else None,
+                "override_by": override.override_by if override else None,
+                "override_timestamp": str(override.override_timestamp) if override else None,
+            } if override else None,
+        }
+        dashboard_data.append(record)
+    
+    return {
+        "dashboard": "stop_leach_decisions",
+        "heap_id": heap_config.heap_id,
+        "record_count": len(dashboard_data),
+        "data": dashboard_data,
+    }
