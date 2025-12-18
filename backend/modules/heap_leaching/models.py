@@ -256,7 +256,77 @@ class ControlRuleLog(Base):
     
     __table_args__ = (
         CheckConstraint(
-            "rule_type IN ('HARD_STOP', 'SOFT_ALERT')",
+            "rule_type IN ('HARD_STOP', 'SOFT_ALERT', 'WEEKLY_FLAG')",
             name="check_rule_type_valid"
         ),
+    )
+
+
+class WeeklyControlSummary(Base):
+    """
+    Weekly control summary for heap leaching operations.
+    
+    Provides management-level weekly KPIs for economics and efficiency.
+    Aggregates data from DailyControlLog records for the week.
+    
+    Keys:
+    - heap_config_id (FK to HeapConfig)
+    - week_start_date (Monday-based ISO week start)
+    - week_end_date
+    
+    Manual Input:
+    - cn_used_kg: Total NaCN used during the week
+    
+    System-generated aggregated fields (read-only):
+    - weekly_solution_applied_m3
+    - weekly_pls_flow_m3
+    - weekly_gold_in_pls_g
+    - cumulative_gold_in_pls_g
+    - contained_gold_g
+    - recovery_pct
+    - cn_consumption_kgpt
+    - cn_efficiency_gpkg
+    
+    One WeeklyControlSummary per heap per week.
+    Summaries are immutable after approval.
+    """
+    __tablename__ = "weekly_control_summaries"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    heap_config_id = Column(String(36), ForeignKey("heap_configs.id"), nullable=False, index=True)
+    
+    week_start_date = Column(Date, nullable=False, index=True)
+    week_end_date = Column(Date, nullable=False, index=True)
+    
+    cn_used_kg = Column(Float, nullable=False)
+    
+    weekly_solution_applied_m3 = Column(Float, nullable=False)
+    weekly_pls_flow_m3 = Column(Float, nullable=False)
+    weekly_gold_in_pls_g = Column(Float, nullable=False)
+    
+    cumulative_gold_in_pls_g = Column(Float, nullable=False)
+    contained_gold_g = Column(Float, nullable=True)
+    recovery_pct = Column(Float, nullable=True)
+    
+    cn_consumption_kgpt = Column(Float, nullable=True)
+    cn_efficiency_gpkg = Column(Float, nullable=True)
+    
+    is_approved = Column(Integer, default=0, nullable=False)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    
+    heap_config = relationship("HeapConfig", foreign_keys=[heap_config_id])
+    approver = relationship("User", foreign_keys=[approved_by])
+    creator = relationship("User", foreign_keys=[created_by])
+    
+    __table_args__ = (
+        UniqueConstraint("heap_config_id", "week_start_date", name="uq_weekly_summary_heap_week"),
+        CheckConstraint("cn_used_kg >= 0", name="check_cn_used_non_negative"),
+        CheckConstraint("weekly_solution_applied_m3 >= 0", name="check_weekly_solution_non_negative"),
+        CheckConstraint("weekly_pls_flow_m3 >= 0", name="check_weekly_pls_non_negative"),
+        CheckConstraint("weekly_gold_in_pls_g >= 0", name="check_weekly_gold_non_negative"),
+        CheckConstraint("week_end_date >= week_start_date", name="check_week_end_gte_start"),
     )

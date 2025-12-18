@@ -33,6 +33,9 @@ from modules.heap_leaching.config import (
     DailyControlLogWithAlertsResponse,
     ControlRuleLogResponse,
     HardStopError,
+    WeeklyControlSummaryCreate,
+    WeeklyControlSummaryResponse,
+    WeeklyControlSummaryWithAlertsResponse,
 )
 from modules.heap_leaching.models import (
     HeapConfig,
@@ -41,6 +44,7 @@ from modules.heap_leaching.models import (
     BenchmarkChangeLog,
     DailyControlLog,
     ControlRuleLog,
+    WeeklyControlSummary,
 )
 from modules.heap_leaching.router import router
 
@@ -59,11 +63,15 @@ __all__ = [
     "DailyControlLogWithAlertsResponse",
     "ControlRuleLogResponse",
     "HardStopError",
+    "WeeklyControlSummaryCreate",
+    "WeeklyControlSummaryResponse",
+    "WeeklyControlSummaryWithAlertsResponse",
     "HeapConfig",
     "HeapConfigHistory",
     "BenchmarkConfig",
     "BenchmarkChangeLog",
     "DailyControlLog",
     "ControlRuleLog",
+    "WeeklyControlSummary",
     "router",
 ]

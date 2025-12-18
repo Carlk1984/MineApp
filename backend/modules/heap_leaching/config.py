@@ -416,6 +416,95 @@ class HardStopError(BaseModel):
         }
 
 
+class WeeklyControlSummaryCreate(BaseModel):
+    """
+    Request schema for creating a WeeklyControlSummary.
+    
+    Only cn_used_kg is provided by the user. All other fields are
+    system-generated from DailyControlLog aggregation.
+    """
+    
+    week_start_date: date = Field(
+        ...,
+        description="Start date of the week (Monday-based ISO week)"
+    )
+    week_end_date: date = Field(
+        ...,
+        description="End date of the week (Sunday)"
+    )
+    cn_used_kg: float = Field(
+        ...,
+        ge=0,
+        description="Total NaCN used during the week in kg (must be >= 0)"
+    )
+    
+    @model_validator(mode='after')
+    def validate_week_dates(self):
+        if self.week_end_date < self.week_start_date:
+            raise ValueError("week_end_date must be >= week_start_date")
+        days_diff = (self.week_end_date - self.week_start_date).days
+        if days_diff != 6:
+            raise ValueError("Week must be exactly 7 days (week_end_date - week_start_date = 6 days)")
+        return self
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "week_start_date": "2024-12-16",
+                "week_end_date": "2024-12-22",
+                "cn_used_kg": 150.0
+            }
+        }
+
+
+class WeeklyControlSummaryResponse(BaseModel):
+    """
+    Response schema for WeeklyControlSummary.
+    
+    Includes all aggregated and calculated fields.
+    """
+    
+    id: str
+    heap_config_id: str
+    week_start_date: date
+    week_end_date: date
+    cn_used_kg: float
+    weekly_solution_applied_m3: float
+    weekly_pls_flow_m3: float
+    weekly_gold_in_pls_g: float
+    cumulative_gold_in_pls_g: float
+    contained_gold_g: Optional[float]
+    recovery_pct: Optional[float]
+    cn_consumption_kgpt: Optional[float]
+    cn_efficiency_gpkg: Optional[float]
+    is_approved: int
+    approved_at: Optional[datetime]
+    approved_by: Optional[str]
+    created_at: datetime
+    created_by: str
+    
+    class Config:
+        from_attributes = True
+
+
+class WeeklyControlSummaryWithAlertsResponse(BaseModel):
+    """
+    Response schema for WeeklyControlSummary with any triggered weekly flags.
+    
+    Returned after successful creation to show the summary and any alerts generated.
+    """
+    
+    weekly_summary: WeeklyControlSummaryResponse
+    alerts: List["ControlRuleLogResponse"] = Field(
+        default=[],
+        description="List of weekly flags triggered by this summary"
+    )
+    aggregation_details: dict = Field(
+        default={},
+        description="Details about the aggregation (days included, any errors)"
+    )
+
+
 class HeapLeachingConfig(BaseModel):
     """
     Configuration schema for Heap Leaching – Key Controls module.

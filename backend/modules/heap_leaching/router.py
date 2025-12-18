@@ -21,6 +21,8 @@ from auth import (
 import models as user_models
 
 from modules.heap_leaching.metadata import MODULE_METADATA, get_module_summary
+from sqlalchemy import func
+
 from modules.heap_leaching.config import (
     HeapLeachingConfig,
     HeapLeachingConfigResponse,
@@ -36,6 +38,9 @@ from modules.heap_leaching.config import (
     DailyControlLogWithAlertsResponse,
     ControlRuleLogResponse,
     HardStopError,
+    WeeklyControlSummaryCreate,
+    WeeklyControlSummaryResponse,
+    WeeklyControlSummaryWithAlertsResponse,
 )
 from modules.heap_leaching.models import (
     HeapConfig,
@@ -44,6 +49,7 @@ from modules.heap_leaching.models import (
     BenchmarkChangeLog,
     DailyControlLog,
     ControlRuleLog,
+    WeeklyControlSummary,
 )
 
 router = APIRouter(
@@ -870,3 +876,381 @@ async def get_control_rule_logs_by_date(
     ).order_by(ControlRuleLog.created_at.desc()).all()
     
     return [ControlRuleLogResponse.model_validate(log) for log in logs]
+
+
+def calculate_daily_solution_applied_m3(flow_m3_per_hr: float, irrigation_hours: float) -> float:
+    """
+    Calculate daily solution applied in m³.
+    
+    Formula: flow_m3_per_hr * irrigation_hours
+    """
+    return flow_m3_per_hr * irrigation_hours
+
+
+def calculate_daily_gold_in_pls_g(pls_flow_m3: float, pls_au_mgL: float) -> float:
+    """
+    Calculate daily gold in PLS in grams.
+    
+    Formula: pls_flow_m3 * pls_au_mgL * 1000 (convert m³ to L) / 1000 (convert mg to g)
+    Simplified: pls_flow_m3 * pls_au_mgL
+    
+    Note: pls_flow_m3 is in m³, pls_au_mgL is in mg/L
+    1 m³ = 1000 L, so gold_mg = pls_flow_m3 * 1000 * pls_au_mgL
+    gold_g = gold_mg / 1000 = pls_flow_m3 * pls_au_mgL
+    """
+    return pls_flow_m3 * pls_au_mgL
+
+
+def aggregate_weekly_data(
+    db: Session,
+    heap_config_id: str,
+    week_start_date: date,
+    week_end_date: date,
+) -> Dict[str, Any]:
+    """
+    Aggregate daily control log data for a week.
+    
+    Returns:
+    - weekly_solution_applied_m3: SUM of daily solution applied
+    - weekly_pls_flow_m3: SUM of daily PLS flow
+    - weekly_gold_in_pls_g: SUM of daily gold in PLS
+    - days_with_data: Number of days with data in the week
+    - errors: List of any errors encountered
+    """
+    daily_logs = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config_id,
+        DailyControlLog.log_date >= week_start_date,
+        DailyControlLog.log_date <= week_end_date,
+    ).all()
+    
+    weekly_solution_applied_m3 = 0.0
+    weekly_pls_flow_m3 = 0.0
+    weekly_gold_in_pls_g = 0.0
+    errors = []
+    
+    for log in daily_logs:
+        daily_solution = calculate_daily_solution_applied_m3(
+            log.flow_m3_per_hr, log.irrigation_hours
+        )
+        daily_gold = calculate_daily_gold_in_pls_g(log.pls_flow_m3, log.pls_au_mgL)
+        
+        weekly_solution_applied_m3 += daily_solution
+        weekly_pls_flow_m3 += log.pls_flow_m3
+        weekly_gold_in_pls_g += daily_gold
+    
+    return {
+        "weekly_solution_applied_m3": round(weekly_solution_applied_m3, 4),
+        "weekly_pls_flow_m3": round(weekly_pls_flow_m3, 4),
+        "weekly_gold_in_pls_g": round(weekly_gold_in_pls_g, 6),
+        "days_with_data": len(daily_logs),
+        "errors": errors,
+    }
+
+
+def calculate_cumulative_gold(
+    db: Session,
+    heap_config_id: str,
+    up_to_week_end: date,
+) -> float:
+    """
+    Calculate cumulative gold in PLS up to and including a specific week.
+    
+    Sums weekly_gold_in_pls_g from all WeeklyControlSummary records
+    up to the specified week end date.
+    """
+    result = db.query(func.sum(WeeklyControlSummary.weekly_gold_in_pls_g)).filter(
+        WeeklyControlSummary.heap_config_id == heap_config_id,
+        WeeklyControlSummary.week_end_date <= up_to_week_end,
+    ).scalar()
+    
+    return result or 0.0
+
+
+def calculate_economic_metrics(
+    heap_config: HeapConfig,
+    cumulative_gold_in_pls_g: float,
+    cn_used_kg: float,
+) -> Dict[str, Any]:
+    """
+    Calculate economic metrics for a weekly summary.
+    
+    Returns:
+    - contained_gold_g: heap_tonnage_t * head_grade_gpt
+    - recovery_pct: (cumulative_gold_in_pls_g / contained_gold_g) * 100
+    - cn_consumption_kgpt: cn_used_kg / heap_tonnage_t
+    - cn_efficiency_gpkg: cumulative_gold_in_pls_g / cn_used_kg
+    - errors: List of any errors encountered
+    """
+    errors = []
+    
+    contained_gold_g = None
+    recovery_pct = None
+    cn_consumption_kgpt = None
+    cn_efficiency_gpkg = None
+    
+    if heap_config.head_grade_gpt is None or heap_config.head_grade_gpt == 0:
+        errors.append("head_grade_gpt is NULL or 0 - recovery_pct cannot be calculated")
+    else:
+        contained_gold_g = heap_config.heap_tonnage_t * heap_config.head_grade_gpt
+        if contained_gold_g > 0:
+            recovery_pct = (cumulative_gold_in_pls_g / contained_gold_g) * 100
+    
+    if heap_config.heap_tonnage_t > 0:
+        cn_consumption_kgpt = cn_used_kg / heap_config.heap_tonnage_t
+    
+    if cn_used_kg is None or cn_used_kg == 0:
+        errors.append("cn_used_kg is NULL or 0 - cn_efficiency_gpkg cannot be calculated")
+    else:
+        cn_efficiency_gpkg = cumulative_gold_in_pls_g / cn_used_kg
+    
+    return {
+        "contained_gold_g": round(contained_gold_g, 4) if contained_gold_g is not None else None,
+        "recovery_pct": round(recovery_pct, 4) if recovery_pct is not None else None,
+        "cn_consumption_kgpt": round(cn_consumption_kgpt, 6) if cn_consumption_kgpt is not None else None,
+        "cn_efficiency_gpkg": round(cn_efficiency_gpkg, 6) if cn_efficiency_gpkg is not None else None,
+        "errors": errors,
+    }
+
+
+def evaluate_weekly_flags(
+    cn_consumption_kgpt: Optional[float],
+    cn_efficiency_gpkg: Optional[float],
+    benchmark_config: BenchmarkConfig,
+) -> List[Dict[str, Any]]:
+    """
+    Evaluate weekly economic flag rules (soft alerts).
+    
+    Returns a list of triggered weekly flags.
+    """
+    weekly_flags = []
+    
+    # WF-1: Excessive Cyanide Consumption
+    if cn_consumption_kgpt is not None and \
+       cn_consumption_kgpt > benchmark_config.cn_consumption_max_kgpt:
+        weekly_flags.append({
+            "rule_id": "WF-1",
+            "rule_type": "WEEKLY_FLAG",
+            "message": "Excessive cyanide consumption (kg/t) – economic risk.",
+            "triggering_field": "cn_consumption_kgpt",
+            "triggering_value": cn_consumption_kgpt,
+            "benchmark_field": "cn_consumption_max_kgpt",
+            "benchmark_value": benchmark_config.cn_consumption_max_kgpt,
+        })
+    
+    # WF-2: Poor Cyanide Efficiency
+    if cn_efficiency_gpkg is not None and \
+       cn_efficiency_gpkg < benchmark_config.cn_efficiency_min_gpkg:
+        weekly_flags.append({
+            "rule_id": "WF-2",
+            "rule_type": "WEEKLY_FLAG",
+            "message": "Poor cyanide efficiency – approaching economic limit.",
+            "triggering_field": "cn_efficiency_gpkg",
+            "triggering_value": cn_efficiency_gpkg,
+            "benchmark_field": "cn_efficiency_min_gpkg",
+            "benchmark_value": benchmark_config.cn_efficiency_min_gpkg,
+        })
+    
+    return weekly_flags
+
+
+@router.post(
+    "/weekly-control-summary",
+    response_model=WeeklyControlSummaryWithAlertsResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create weekly control summary",
+    description="Creates a new weekly control summary with aggregated data from DailyControlLog. Requires Manager role or above.",
+)
+async def create_weekly_control_summary(
+    summary_data: WeeklyControlSummaryCreate,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_manager_or_above),
+) -> WeeklyControlSummaryWithAlertsResponse:
+    """
+    Create a new weekly control summary with aggregated data.
+    
+    Requirements:
+    - Requires Manager role or above
+    - HeapConfig and BenchmarkConfig must exist
+    - One summary per heap per week
+    - Aggregates data from immutable DailyControlLog records
+    
+    Calculations:
+    - weekly_solution_applied_m3: SUM of daily solution applied
+    - weekly_pls_flow_m3: SUM of daily PLS flow
+    - weekly_gold_in_pls_g: SUM of daily gold in PLS
+    - cumulative_gold_in_pls_g: SUM of all weekly gold to date
+    - contained_gold_g: heap_tonnage_t * head_grade_gpt
+    - recovery_pct: (cumulative_gold_in_pls_g / contained_gold_g) * 100
+    - cn_consumption_kgpt: cn_used_kg / heap_tonnage_t
+    - cn_efficiency_gpkg: cumulative_gold_in_pls_g / cn_used_kg
+    
+    Weekly Flags (soft alerts):
+    - WF-1: Excessive Cyanide Consumption
+    - WF-2: Poor Cyanide Efficiency
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HeapConfig must exist before creating weekly summaries."
+        )
+    
+    benchmark_config = db.query(BenchmarkConfig).filter(
+        BenchmarkConfig.heap_config_id == heap_config.id
+    ).first()
+    if not benchmark_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BenchmarkConfig must exist before creating weekly summaries."
+        )
+    
+    existing_summary = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.heap_config_id == heap_config.id,
+        WeeklyControlSummary.week_start_date == summary_data.week_start_date,
+    ).first()
+    if existing_summary:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A weekly summary already exists for week starting {summary_data.week_start_date}."
+        )
+    
+    aggregation = aggregate_weekly_data(
+        db, heap_config.id, summary_data.week_start_date, summary_data.week_end_date
+    )
+    
+    previous_cumulative = calculate_cumulative_gold(
+        db, heap_config.id, summary_data.week_start_date
+    )
+    cumulative_gold_in_pls_g = previous_cumulative + aggregation["weekly_gold_in_pls_g"]
+    
+    economic_metrics = calculate_economic_metrics(
+        heap_config, cumulative_gold_in_pls_g, summary_data.cn_used_kg
+    )
+    
+    db_summary = WeeklyControlSummary(
+        heap_config_id=heap_config.id,
+        week_start_date=summary_data.week_start_date,
+        week_end_date=summary_data.week_end_date,
+        cn_used_kg=summary_data.cn_used_kg,
+        weekly_solution_applied_m3=aggregation["weekly_solution_applied_m3"],
+        weekly_pls_flow_m3=aggregation["weekly_pls_flow_m3"],
+        weekly_gold_in_pls_g=aggregation["weekly_gold_in_pls_g"],
+        cumulative_gold_in_pls_g=round(cumulative_gold_in_pls_g, 6),
+        contained_gold_g=economic_metrics["contained_gold_g"],
+        recovery_pct=economic_metrics["recovery_pct"],
+        cn_consumption_kgpt=economic_metrics["cn_consumption_kgpt"],
+        cn_efficiency_gpkg=economic_metrics["cn_efficiency_gpkg"],
+        created_by=current_user.id,
+    )
+    db.add(db_summary)
+    db.flush()
+    
+    weekly_flags = evaluate_weekly_flags(
+        economic_metrics["cn_consumption_kgpt"],
+        economic_metrics["cn_efficiency_gpkg"],
+        benchmark_config,
+    )
+    
+    alert_logs = []
+    for wf in weekly_flags:
+        alert_log = ControlRuleLog(
+            heap_config_id=heap_config.id,
+            daily_control_log_id=None,
+            rule_id=wf["rule_id"],
+            rule_type=wf["rule_type"],
+            rule_message=wf["message"],
+            triggering_field=wf["triggering_field"],
+            triggering_value=wf["triggering_value"],
+            benchmark_field=wf["benchmark_field"],
+            benchmark_value=wf["benchmark_value"],
+            log_date=summary_data.week_end_date,
+            created_by=current_user.id,
+        )
+        db.add(alert_log)
+        alert_logs.append(alert_log)
+    
+    db.commit()
+    db.refresh(db_summary)
+    
+    for alert_log in alert_logs:
+        db.refresh(alert_log)
+    
+    aggregation_details = {
+        "days_with_data": aggregation["days_with_data"],
+        "aggregation_errors": aggregation["errors"],
+        "economic_calculation_errors": economic_metrics["errors"],
+    }
+    
+    return WeeklyControlSummaryWithAlertsResponse(
+        weekly_summary=WeeklyControlSummaryResponse.model_validate(db_summary),
+        alerts=[ControlRuleLogResponse.model_validate(log) for log in alert_logs],
+        aggregation_details=aggregation_details,
+    )
+
+
+@router.get(
+    "/weekly-control-summary",
+    response_model=List[WeeklyControlSummaryResponse],
+    summary="List weekly control summaries",
+    description="Returns all weekly control summaries for the heap. All authenticated users can read summaries.",
+)
+async def list_weekly_control_summaries(
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+    limit: int = Query(default=52, ge=1, le=520, description="Maximum number of summaries to return"),
+    offset: int = Query(default=0, ge=0, description="Number of summaries to skip"),
+) -> List[WeeklyControlSummaryResponse]:
+    """
+    List weekly control summaries with pagination.
+    
+    All authenticated users can read weekly summaries.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found. No summaries available."
+        )
+    
+    summaries = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.heap_config_id == heap_config.id
+    ).order_by(WeeklyControlSummary.week_start_date.desc()).offset(offset).limit(limit).all()
+    
+    return [WeeklyControlSummaryResponse.model_validate(s) for s in summaries]
+
+
+@router.get(
+    "/weekly-control-summary/{week_start_date}",
+    response_model=WeeklyControlSummaryResponse,
+    summary="Get weekly control summary by week start date",
+    description="Returns the weekly control summary for a specific week. All authenticated users can read summaries.",
+)
+async def get_weekly_control_summary(
+    week_start_date: date,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+) -> WeeklyControlSummaryResponse:
+    """
+    Get the weekly control summary for a specific week.
+    
+    All authenticated users can read weekly summaries.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found."
+        )
+    
+    summary = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.heap_config_id == heap_config.id,
+        WeeklyControlSummary.week_start_date == week_start_date,
+    ).first()
+    
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No weekly summary found for week starting {week_start_date}."
+        )
+    
+    return WeeklyControlSummaryResponse.model_validate(summary)
