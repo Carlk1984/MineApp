@@ -505,6 +505,124 @@ class WeeklyControlSummaryWithAlertsResponse(BaseModel):
     )
 
 
+class OverrideReason(str, Enum):
+    """Fixed enum for override reasons."""
+    SHORT_TERM_OPERATIONAL_DISRUPTION = "SHORT_TERM_OPERATIONAL_DISRUPTION"
+    TEMPORARY_REAGENT_SUPPLY_ISSUE = "TEMPORARY_REAGENT_SUPPLY_ISSUE"
+    EXPECTED_DELAYED_RECOVERY = "EXPECTED_DELAYED_RECOVERY"
+    STRATEGIC_DECISION = "STRATEGIC_DECISION"
+    TRIAL_TEST_CONTINUATION = "TRIAL_TEST_CONTINUATION"
+    OTHER = "OTHER"
+
+
+class OverrideAction(str, Enum):
+    """Override action enum."""
+    CONTINUE = "CONTINUE"
+    STOP = "STOP"
+
+
+class StopLeachDecisionResponse(BaseModel):
+    """
+    Response schema for StopLeachDecision.
+    
+    System-generated decision based on weekly economic metrics.
+    Records are immutable - represents the system's recommendation.
+    """
+    
+    id: str
+    heap_config_id: str
+    weekly_summary_id: str
+    decision_date: date
+    stop_recommendation: int
+    recovery_pct: Optional[float]
+    cn_efficiency_gpkg: Optional[float]
+    cn_consumption_kgpt: Optional[float]
+    cumulative_gold_in_pls_g: Optional[float]
+    decision_reasons: List[str]
+    system_status: str
+    created_at: datetime
+    created_by: str
+    
+    class Config:
+        from_attributes = True
+
+
+class StopLeachDecisionWithOverrideResponse(BaseModel):
+    """
+    Response schema for StopLeachDecision with any override.
+    
+    Shows the original decision alongside any management override.
+    """
+    
+    decision: StopLeachDecisionResponse
+    override: Optional["StopLeachOverrideResponse"] = Field(
+        default=None,
+        description="Management override if one exists"
+    )
+    effective_status: str = Field(
+        ...,
+        description="Current effective system status after considering any override"
+    )
+
+
+class StopLeachOverrideCreate(BaseModel):
+    """
+    Request schema for creating a StopLeachOverride.
+    
+    Only Management role can create overrides.
+    Override may only be created if a StopLeachDecision exists with stop_recommendation == TRUE.
+    """
+    
+    decision_id: str = Field(
+        ...,
+        description="ID of the StopLeachDecision to override"
+    )
+    override_action: OverrideAction = Field(
+        ...,
+        description="Override action: CONTINUE or STOP"
+    )
+    override_reason: OverrideReason = Field(
+        ...,
+        description="Reason for the override (from fixed enum)"
+    )
+    override_justification_text: str = Field(
+        ...,
+        min_length=50,
+        description="Detailed justification for the override (minimum 50 characters)"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "decision_id": "abc123-def456",
+                "override_action": "CONTINUE",
+                "override_reason": "SHORT_TERM_OPERATIONAL_DISRUPTION",
+                "override_justification_text": "Power outage affected operations for 3 days this week. Recovery expected to normalize once full irrigation resumes. Monitoring closely for next 7 days."
+            }
+        }
+
+
+class StopLeachOverrideResponse(BaseModel):
+    """
+    Response schema for StopLeachOverride.
+    
+    Records are immutable - overrides cannot be edited or deleted once submitted.
+    """
+    
+    id: str
+    heap_config_id: str
+    decision_id: str
+    override_action: str
+    override_reason: str
+    override_justification_text: str
+    decision_snapshot: dict
+    override_timestamp: datetime
+    override_by: str
+    
+    class Config:
+        from_attributes = True
+
+
 class HeapLeachingConfig(BaseModel):
     """
     Configuration schema for Heap Leaching – Key Controls module.

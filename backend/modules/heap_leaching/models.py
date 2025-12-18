@@ -330,3 +330,106 @@ class WeeklyControlSummary(Base):
         CheckConstraint("weekly_gold_in_pls_g >= 0", name="check_weekly_gold_non_negative"),
         CheckConstraint("week_end_date >= week_start_date", name="check_week_end_gte_start"),
     )
+
+
+class StopLeachDecision(Base):
+    """
+    Stop-Leach decision record for heap leaching operations.
+    
+    System-generated decision based on weekly economic metrics.
+    Records are IMMUTABLE - represents the system's recommendation.
+    
+    Decision Logic:
+    - stop_recommendation = TRUE if economic thresholds are breached
+    - Original decision cannot be modified or deleted
+    - Management can create an override (StopLeachOverride) but decision remains
+    
+    One StopLeachDecision per WeeklyControlSummary.
+    """
+    __tablename__ = "stop_leach_decisions"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    heap_config_id = Column(String(36), ForeignKey("heap_configs.id"), nullable=False, index=True)
+    weekly_summary_id = Column(String(36), ForeignKey("weekly_control_summaries.id"), unique=True, nullable=False, index=True)
+    
+    decision_date = Column(Date, nullable=False, index=True)
+    stop_recommendation = Column(Integer, nullable=False)
+    
+    recovery_pct = Column(Float, nullable=True)
+    cn_efficiency_gpkg = Column(Float, nullable=True)
+    cn_consumption_kgpt = Column(Float, nullable=True)
+    cumulative_gold_in_pls_g = Column(Float, nullable=True)
+    
+    decision_reasons = Column(JSON, nullable=False)
+    
+    system_status = Column(String(50), nullable=False, default="PENDING")
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    
+    heap_config = relationship("HeapConfig", foreign_keys=[heap_config_id])
+    weekly_summary = relationship("WeeklyControlSummary", foreign_keys=[weekly_summary_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    
+    __table_args__ = (
+        CheckConstraint(
+            "stop_recommendation IN (0, 1)",
+            name="check_stop_recommendation_boolean"
+        ),
+        CheckConstraint(
+            "system_status IN ('PENDING', 'CONTINUE', 'STOP', 'CONTINUE_UNDER_OVERRIDE', 'STOP_CONFIRMED_BY_MANAGEMENT')",
+            name="check_system_status_valid"
+        ),
+    )
+
+
+class StopLeachOverride(Base):
+    """
+    Management override for Stop-Leach decisions.
+    
+    Allows management to override system STOP recommendations.
+    Overrides are additive - original decision remains immutable.
+    
+    Rules:
+    - One override allowed per StopLeachDecision
+    - Overrides cannot be edited or deleted once submitted
+    - Overrides can only be created by Management role
+    - Original StopLeachDecision remains immutable
+    
+    Override Actions:
+    - CONTINUE: System status becomes "CONTINUE_UNDER_OVERRIDE"
+    - STOP: System status becomes "STOP_CONFIRMED_BY_MANAGEMENT"
+    """
+    __tablename__ = "stop_leach_overrides"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    heap_config_id = Column(String(36), ForeignKey("heap_configs.id"), nullable=False, index=True)
+    decision_id = Column(String(36), ForeignKey("stop_leach_decisions.id"), unique=True, nullable=False, index=True)
+    
+    override_action = Column(String(20), nullable=False)
+    override_reason = Column(String(100), nullable=False)
+    override_justification_text = Column(Text, nullable=False)
+    
+    decision_snapshot = Column(JSON, nullable=False)
+    
+    override_timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    override_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    
+    heap_config = relationship("HeapConfig", foreign_keys=[heap_config_id])
+    decision = relationship("StopLeachDecision", foreign_keys=[decision_id])
+    overrider = relationship("User", foreign_keys=[override_by])
+    
+    __table_args__ = (
+        CheckConstraint(
+            "override_action IN ('CONTINUE', 'STOP')",
+            name="check_override_action_valid"
+        ),
+        CheckConstraint(
+            "override_reason IN ('SHORT_TERM_OPERATIONAL_DISRUPTION', 'TEMPORARY_REAGENT_SUPPLY_ISSUE', 'EXPECTED_DELAYED_RECOVERY', 'STRATEGIC_DECISION', 'TRIAL_TEST_CONTINUATION', 'OTHER')",
+            name="check_override_reason_valid"
+        ),
+        CheckConstraint(
+            "length(override_justification_text) >= 50",
+            name="check_justification_min_length"
+        ),
+    )

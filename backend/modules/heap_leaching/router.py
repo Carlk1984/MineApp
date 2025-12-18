@@ -41,6 +41,10 @@ from modules.heap_leaching.config import (
     WeeklyControlSummaryCreate,
     WeeklyControlSummaryResponse,
     WeeklyControlSummaryWithAlertsResponse,
+    StopLeachDecisionResponse,
+    StopLeachDecisionWithOverrideResponse,
+    StopLeachOverrideCreate,
+    StopLeachOverrideResponse,
 )
 from modules.heap_leaching.models import (
     HeapConfig,
@@ -50,6 +54,8 @@ from modules.heap_leaching.models import (
     DailyControlLog,
     ControlRuleLog,
     WeeklyControlSummary,
+    StopLeachDecision,
+    StopLeachOverride,
 )
 
 router = APIRouter(
@@ -1254,3 +1260,375 @@ async def get_weekly_control_summary(
         )
     
     return WeeklyControlSummaryResponse.model_validate(summary)
+
+
+def evaluate_stop_leach_decision(
+    weekly_summary: WeeklyControlSummary,
+    benchmark_config: BenchmarkConfig,
+) -> Dict[str, Any]:
+    """
+    Evaluate whether to recommend stopping leaching based on weekly metrics.
+    
+    Decision Logic:
+    - stop_recommendation = TRUE if any economic threshold is breached
+    - Thresholds: cn_efficiency below minimum, cn_consumption above maximum
+    
+    Returns:
+    - stop_recommendation: 0 (continue) or 1 (stop)
+    - decision_reasons: List of reasons for the recommendation
+    - metrics: Snapshot of metrics used for decision
+    """
+    decision_reasons = []
+    stop_recommendation = 0
+    
+    if weekly_summary.cn_efficiency_gpkg is not None and \
+       weekly_summary.cn_efficiency_gpkg < benchmark_config.cn_efficiency_min_gpkg:
+        decision_reasons.append(
+            f"Cyanide efficiency ({weekly_summary.cn_efficiency_gpkg:.4f} g/kg) below minimum ({benchmark_config.cn_efficiency_min_gpkg} g/kg)"
+        )
+        stop_recommendation = 1
+    
+    if weekly_summary.cn_consumption_kgpt is not None and \
+       weekly_summary.cn_consumption_kgpt > benchmark_config.cn_consumption_max_kgpt:
+        decision_reasons.append(
+            f"Cyanide consumption ({weekly_summary.cn_consumption_kgpt:.4f} kg/t) above maximum ({benchmark_config.cn_consumption_max_kgpt} kg/t)"
+        )
+        stop_recommendation = 1
+    
+    if weekly_summary.recovery_pct is not None and weekly_summary.recovery_pct < 10.0:
+        decision_reasons.append(
+            f"Recovery percentage ({weekly_summary.recovery_pct:.2f}%) critically low"
+        )
+        stop_recommendation = 1
+    
+    if not decision_reasons:
+        decision_reasons.append("All metrics within acceptable ranges - continue leaching")
+    
+    return {
+        "stop_recommendation": stop_recommendation,
+        "decision_reasons": decision_reasons,
+        "metrics": {
+            "recovery_pct": weekly_summary.recovery_pct,
+            "cn_efficiency_gpkg": weekly_summary.cn_efficiency_gpkg,
+            "cn_consumption_kgpt": weekly_summary.cn_consumption_kgpt,
+            "cumulative_gold_in_pls_g": weekly_summary.cumulative_gold_in_pls_g,
+        },
+    }
+
+
+@router.post(
+    "/stop-leach-decision/{weekly_summary_id}",
+    response_model=StopLeachDecisionWithOverrideResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate stop-leach decision",
+    description="Generates a stop-leach decision based on weekly metrics. Requires Manager role or above.",
+)
+async def create_stop_leach_decision(
+    weekly_summary_id: str,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_manager_or_above),
+) -> StopLeachDecisionWithOverrideResponse:
+    """
+    Generate a stop-leach decision for a weekly summary.
+    
+    Requirements:
+    - Requires Manager role or above
+    - WeeklyControlSummary must exist
+    - One decision per weekly summary
+    
+    Decision Logic:
+    - Evaluates economic metrics against benchmarks
+    - stop_recommendation = 1 if thresholds breached
+    - Decision is IMMUTABLE after creation
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HeapConfig must exist."
+        )
+    
+    benchmark_config = db.query(BenchmarkConfig).filter(
+        BenchmarkConfig.heap_config_id == heap_config.id
+    ).first()
+    if not benchmark_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BenchmarkConfig must exist."
+        )
+    
+    weekly_summary = db.query(WeeklyControlSummary).filter(
+        WeeklyControlSummary.id == weekly_summary_id,
+        WeeklyControlSummary.heap_config_id == heap_config.id,
+    ).first()
+    if not weekly_summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"WeeklyControlSummary with ID {weekly_summary_id} not found."
+        )
+    
+    existing_decision = db.query(StopLeachDecision).filter(
+        StopLeachDecision.weekly_summary_id == weekly_summary_id,
+    ).first()
+    if existing_decision:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A stop-leach decision already exists for this weekly summary."
+        )
+    
+    evaluation = evaluate_stop_leach_decision(weekly_summary, benchmark_config)
+    
+    system_status = "STOP" if evaluation["stop_recommendation"] == 1 else "CONTINUE"
+    
+    db_decision = StopLeachDecision(
+        heap_config_id=heap_config.id,
+        weekly_summary_id=weekly_summary_id,
+        decision_date=weekly_summary.week_end_date,
+        stop_recommendation=evaluation["stop_recommendation"],
+        recovery_pct=evaluation["metrics"]["recovery_pct"],
+        cn_efficiency_gpkg=evaluation["metrics"]["cn_efficiency_gpkg"],
+        cn_consumption_kgpt=evaluation["metrics"]["cn_consumption_kgpt"],
+        cumulative_gold_in_pls_g=evaluation["metrics"]["cumulative_gold_in_pls_g"],
+        decision_reasons=evaluation["decision_reasons"],
+        system_status=system_status,
+        created_by=current_user.id,
+    )
+    db.add(db_decision)
+    db.commit()
+    db.refresh(db_decision)
+    
+    return StopLeachDecisionWithOverrideResponse(
+        decision=StopLeachDecisionResponse.model_validate(db_decision),
+        override=None,
+        effective_status=system_status,
+    )
+
+
+@router.get(
+    "/stop-leach-decision",
+    response_model=List[StopLeachDecisionWithOverrideResponse],
+    summary="List stop-leach decisions",
+    description="Returns all stop-leach decisions with any overrides. All authenticated users can read decisions.",
+)
+async def list_stop_leach_decisions(
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+    limit: int = Query(default=52, ge=1, le=520, description="Maximum number of decisions to return"),
+    offset: int = Query(default=0, ge=0, description="Number of decisions to skip"),
+) -> List[StopLeachDecisionWithOverrideResponse]:
+    """
+    List stop-leach decisions with any overrides.
+    
+    All authenticated users can read decisions.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found. No decisions available."
+        )
+    
+    decisions = db.query(StopLeachDecision).filter(
+        StopLeachDecision.heap_config_id == heap_config.id
+    ).order_by(StopLeachDecision.decision_date.desc()).offset(offset).limit(limit).all()
+    
+    results = []
+    for decision in decisions:
+        override = db.query(StopLeachOverride).filter(
+            StopLeachOverride.decision_id == decision.id
+        ).first()
+        
+        effective_status = decision.system_status
+        if override:
+            if override.override_action == "CONTINUE":
+                effective_status = "CONTINUE_UNDER_OVERRIDE"
+            else:
+                effective_status = "STOP_CONFIRMED_BY_MANAGEMENT"
+        
+        results.append(StopLeachDecisionWithOverrideResponse(
+            decision=StopLeachDecisionResponse.model_validate(decision),
+            override=StopLeachOverrideResponse.model_validate(override) if override else None,
+            effective_status=effective_status,
+        ))
+    
+    return results
+
+
+@router.get(
+    "/stop-leach-decision/{decision_id}",
+    response_model=StopLeachDecisionWithOverrideResponse,
+    summary="Get stop-leach decision by ID",
+    description="Returns a specific stop-leach decision with any override. All authenticated users can read decisions.",
+)
+async def get_stop_leach_decision(
+    decision_id: str,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+) -> StopLeachDecisionWithOverrideResponse:
+    """
+    Get a specific stop-leach decision with any override.
+    
+    All authenticated users can read decisions.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found."
+        )
+    
+    decision = db.query(StopLeachDecision).filter(
+        StopLeachDecision.id == decision_id,
+        StopLeachDecision.heap_config_id == heap_config.id,
+    ).first()
+    
+    if not decision:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"StopLeachDecision with ID {decision_id} not found."
+        )
+    
+    override = db.query(StopLeachOverride).filter(
+        StopLeachOverride.decision_id == decision.id
+    ).first()
+    
+    effective_status = decision.system_status
+    if override:
+        if override.override_action == "CONTINUE":
+            effective_status = "CONTINUE_UNDER_OVERRIDE"
+        else:
+            effective_status = "STOP_CONFIRMED_BY_MANAGEMENT"
+    
+    return StopLeachDecisionWithOverrideResponse(
+        decision=StopLeachDecisionResponse.model_validate(decision),
+        override=StopLeachOverrideResponse.model_validate(override) if override else None,
+        effective_status=effective_status,
+    )
+
+
+@router.post(
+    "/stop-leach-override",
+    response_model=StopLeachDecisionWithOverrideResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create management override",
+    description="Creates a management override for a stop-leach decision. Requires Manager role. Only allowed for decisions with stop_recommendation == TRUE.",
+)
+async def create_stop_leach_override(
+    override_data: StopLeachOverrideCreate,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_manager_or_above),
+) -> StopLeachDecisionWithOverrideResponse:
+    """
+    Create a management override for a stop-leach decision.
+    
+    Requirements:
+    - Requires Manager role
+    - StopLeachDecision must exist with stop_recommendation == TRUE
+    - One override per decision
+    - Override cannot be edited or deleted once submitted
+    
+    Override Actions:
+    - CONTINUE: System status becomes "CONTINUE_UNDER_OVERRIDE"
+    - STOP: System status becomes "STOP_CONFIRMED_BY_MANAGEMENT"
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HeapConfig must exist."
+        )
+    
+    decision = db.query(StopLeachDecision).filter(
+        StopLeachDecision.id == override_data.decision_id,
+        StopLeachDecision.heap_config_id == heap_config.id,
+    ).first()
+    if not decision:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"StopLeachDecision with ID {override_data.decision_id} not found."
+        )
+    
+    if decision.stop_recommendation != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Override can only be created for decisions with stop_recommendation == TRUE (1)."
+        )
+    
+    existing_override = db.query(StopLeachOverride).filter(
+        StopLeachOverride.decision_id == override_data.decision_id,
+    ).first()
+    if existing_override:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An override already exists for this decision. Overrides cannot be edited or deleted."
+        )
+    
+    decision_snapshot = {
+        "id": decision.id,
+        "decision_date": str(decision.decision_date),
+        "stop_recommendation": decision.stop_recommendation,
+        "recovery_pct": decision.recovery_pct,
+        "cn_efficiency_gpkg": decision.cn_efficiency_gpkg,
+        "cn_consumption_kgpt": decision.cn_consumption_kgpt,
+        "cumulative_gold_in_pls_g": decision.cumulative_gold_in_pls_g,
+        "decision_reasons": decision.decision_reasons,
+        "original_system_status": decision.system_status,
+    }
+    
+    db_override = StopLeachOverride(
+        heap_config_id=heap_config.id,
+        decision_id=override_data.decision_id,
+        override_action=override_data.override_action.value,
+        override_reason=override_data.override_reason.value,
+        override_justification_text=override_data.override_justification_text,
+        decision_snapshot=decision_snapshot,
+        override_by=current_user.id,
+    )
+    db.add(db_override)
+    
+    if override_data.override_action.value == "CONTINUE":
+        decision.system_status = "CONTINUE_UNDER_OVERRIDE"
+    else:
+        decision.system_status = "STOP_CONFIRMED_BY_MANAGEMENT"
+    
+    db.commit()
+    db.refresh(db_override)
+    db.refresh(decision)
+    
+    return StopLeachDecisionWithOverrideResponse(
+        decision=StopLeachDecisionResponse.model_validate(decision),
+        override=StopLeachOverrideResponse.model_validate(db_override),
+        effective_status=decision.system_status,
+    )
+
+
+@router.get(
+    "/stop-leach-override",
+    response_model=List[StopLeachOverrideResponse],
+    summary="List all overrides",
+    description="Returns all stop-leach overrides for audit purposes. All authenticated users can read overrides.",
+)
+async def list_stop_leach_overrides(
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum number of overrides to return"),
+    offset: int = Query(default=0, ge=0, description="Number of overrides to skip"),
+) -> List[StopLeachOverrideResponse]:
+    """
+    List all stop-leach overrides for audit purposes.
+    
+    All authenticated users can read overrides.
+    Overrides are immutable - no update or delete operations available.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found. No overrides available."
+        )
+    
+    overrides = db.query(StopLeachOverride).filter(
+        StopLeachOverride.heap_config_id == heap_config.id
+    ).order_by(StopLeachOverride.override_timestamp.desc()).offset(offset).limit(limit).all()
+    
+    return [StopLeachOverrideResponse.model_validate(o) for o in overrides]
