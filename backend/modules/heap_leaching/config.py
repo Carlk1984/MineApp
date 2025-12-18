@@ -248,6 +248,102 @@ class BenchmarkChangeLogResponse(BaseModel):
         from_attributes = True
 
 
+class DailyControlLogCreate(BaseModel):
+    """
+    Request schema for creating a DailyControlLog.
+    
+    All fields are required. Records are immutable after submission.
+    Only Contractor role may create new records.
+    """
+    
+    log_date: date = Field(
+        ...,
+        description="Date of the control log entry"
+    )
+    area_irrigated_m2: float = Field(
+        ...,
+        ge=0,
+        description="Area irrigated in square meters (must be >= 0)"
+    )
+    flow_m3_per_hr: float = Field(
+        ...,
+        ge=0,
+        description="Flow rate in cubic meters per hour (must be >= 0)"
+    )
+    irrigation_hours: float = Field(
+        ...,
+        ge=0,
+        le=24,
+        description="Irrigation hours (must be >= 0 and <= 24)"
+    )
+    applied_cn_ppm: float = Field(
+        ...,
+        ge=0,
+        description="Applied cyanide concentration in ppm (must be >= 0)"
+    )
+    applied_ph: float = Field(
+        ...,
+        ge=0,
+        le=14,
+        description="Applied pH (must be between 0 and 14)"
+    )
+    pls_flow_m3: float = Field(
+        ...,
+        ge=0,
+        description="PLS flow in cubic meters (must be >= 0)"
+    )
+    pls_au_mgL: float = Field(
+        ...,
+        ge=0,
+        description="PLS gold concentration in mg/L (must be >= 0)"
+    )
+    pond_freeboard_m: float = Field(
+        ...,
+        ge=0,
+        description="Pond freeboard in meters (must be >= 0)"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "log_date": "2024-12-17",
+                "area_irrigated_m2": 500.0,
+                "flow_m3_per_hr": 25.0,
+                "irrigation_hours": 20.0,
+                "applied_cn_ppm": 250.0,
+                "applied_ph": 10.8,
+                "pls_flow_m3": 480.0,
+                "pls_au_mgL": 0.85,
+                "pond_freeboard_m": 0.75
+            }
+        }
+
+
+class DailyControlLogResponse(BaseModel):
+    """
+    Response schema for DailyControlLog.
+    
+    Records are immutable - no update or delete operations available.
+    """
+    
+    id: str
+    heap_config_id: str
+    log_date: date
+    area_irrigated_m2: float
+    flow_m3_per_hr: float
+    irrigation_hours: float
+    applied_cn_ppm: float
+    applied_ph: float
+    pls_flow_m3: float
+    pls_au_mgL: float
+    pond_freeboard_m: float
+    created_at: datetime
+    created_by: str
+    
+    class Config:
+        from_attributes = True
+
+
 class HeapLeachingConfig(BaseModel):
     """
     Configuration schema for Heap Leaching – Key Controls module.

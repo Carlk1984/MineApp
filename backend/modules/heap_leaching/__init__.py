@@ -28,12 +28,15 @@ from modules.heap_leaching.config import (
     BenchmarkConfigUpdate,
     BenchmarkConfigResponse,
     BenchmarkChangeLogResponse,
+    DailyControlLogCreate,
+    DailyControlLogResponse,
 )
 from modules.heap_leaching.models import (
     HeapConfig,
     HeapConfigHistory,
     BenchmarkConfig,
     BenchmarkChangeLog,
+    DailyControlLog,
 )
 from modules.heap_leaching.router import router
 
@@ -47,9 +50,12 @@ __all__ = [
     "BenchmarkConfigUpdate",
     "BenchmarkConfigResponse",
     "BenchmarkChangeLogResponse",
+    "DailyControlLogCreate",
+    "DailyControlLogResponse",
     "HeapConfig",
     "HeapConfigHistory",
     "BenchmarkConfig",
     "BenchmarkChangeLog",
+    "DailyControlLog",
     "router",
 ]

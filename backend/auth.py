@@ -105,3 +105,23 @@ def require_manager_or_above(current_user: Annotated[models.User, Depends(get_cu
     if current_user.role not in ["manager", "supervisor", "admin"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access or above required")
     return current_user
+
+
+def require_contractor(current_user: Annotated[models.User, Depends(get_current_active_user)]):
+    """Require contractor role for creating operational data records."""
+    if current_user.role != "contractor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Contractor role required to create operational records"
+        )
+    return current_user
+
+
+def require_engineer_or_above(current_user: Annotated[models.User, Depends(get_current_active_user)]):
+    """Require engineer, manager, supervisor, or admin role for read access."""
+    if current_user.role not in ["engineer", "manager", "supervisor", "admin", "contractor"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Engineer access or above required"
+        )
+    return current_user

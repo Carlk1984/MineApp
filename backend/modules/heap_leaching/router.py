@@ -5,13 +5,19 @@ Provides API endpoints for HeapConfig and BenchmarkConfig management
 with role-based access control and change logging.
 """
 
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, date
 
 from database import get_db
-from auth import get_current_active_user, require_admin, require_manager_or_above
+from auth import (
+    get_current_active_user,
+    require_admin,
+    require_manager_or_above,
+    require_contractor,
+    require_engineer_or_above,
+)
 import models as user_models
 
 from modules.heap_leaching.metadata import MODULE_METADATA, get_module_summary
@@ -25,12 +31,15 @@ from modules.heap_leaching.config import (
     BenchmarkConfigUpdate,
     BenchmarkConfigResponse,
     BenchmarkChangeLogResponse,
+    DailyControlLogCreate,
+    DailyControlLogResponse,
 )
 from modules.heap_leaching.models import (
     HeapConfig,
     HeapConfigHistory,
     BenchmarkConfig,
     BenchmarkChangeLog,
+    DailyControlLog,
 )
 
 router = APIRouter(
@@ -414,3 +423,148 @@ async def get_benchmark_change_log(
     """Get the change log for benchmark configuration."""
     logs = db.query(BenchmarkChangeLog).order_by(BenchmarkChangeLog.changed_at.desc()).all()
     return [BenchmarkChangeLogResponse.model_validate(log) for log in logs]
+
+
+@router.post(
+    "/daily-control-log",
+    response_model=DailyControlLogResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create daily control log",
+    description="Creates a new daily control log entry. Requires Contractor role. Records are immutable after submission.",
+)
+async def create_daily_control_log(
+    log_data: DailyControlLogCreate,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(require_contractor),
+) -> DailyControlLogResponse:
+    """
+    Create a new daily control log entry.
+    
+    Requirements:
+    - Requires Contractor role
+    - HeapConfig and BenchmarkConfig must exist before creating logs
+    - One log per calendar day per heap
+    - Records are IMMUTABLE after submission (no edits or deletions)
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HeapConfig must exist before creating daily control logs."
+        )
+    
+    benchmark_config = db.query(BenchmarkConfig).filter(
+        BenchmarkConfig.heap_config_id == heap_config.id
+    ).first()
+    if not benchmark_config:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BenchmarkConfig must exist before creating daily control logs."
+        )
+    
+    existing_log = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config.id,
+        DailyControlLog.log_date == log_data.log_date,
+    ).first()
+    if existing_log:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A daily control log already exists for {log_data.log_date}. Records are immutable."
+        )
+    
+    db_log = DailyControlLog(
+        heap_config_id=heap_config.id,
+        log_date=log_data.log_date,
+        area_irrigated_m2=log_data.area_irrigated_m2,
+        flow_m3_per_hr=log_data.flow_m3_per_hr,
+        irrigation_hours=log_data.irrigation_hours,
+        applied_cn_ppm=log_data.applied_cn_ppm,
+        applied_ph=log_data.applied_ph,
+        pls_flow_m3=log_data.pls_flow_m3,
+        pls_au_mgL=log_data.pls_au_mgL,
+        pond_freeboard_m=log_data.pond_freeboard_m,
+        created_by=current_user.id,
+    )
+    db.add(db_log)
+    db.commit()
+    db.refresh(db_log)
+    
+    return DailyControlLogResponse.model_validate(db_log)
+
+
+@router.get(
+    "/daily-control-log",
+    response_model=List[DailyControlLogResponse],
+    summary="List daily control logs",
+    description="Returns all daily control logs. All authenticated users can read logs.",
+)
+async def list_daily_control_logs(
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+    start_date: Optional[date] = Query(default=None, description="Filter logs from this date"),
+    end_date: Optional[date] = Query(default=None, description="Filter logs until this date"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum number of logs to return"),
+    offset: int = Query(default=0, ge=0, description="Number of logs to skip"),
+) -> List[DailyControlLogResponse]:
+    """
+    List daily control logs with optional date filtering.
+    
+    All authenticated users (Contractor, Engineer, Manager, Admin) can read logs.
+    Records are immutable - no update or delete operations available.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found. No logs available."
+        )
+    
+    query = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config.id
+    )
+    
+    if start_date:
+        query = query.filter(DailyControlLog.log_date >= start_date)
+    if end_date:
+        query = query.filter(DailyControlLog.log_date <= end_date)
+    
+    logs = query.order_by(DailyControlLog.log_date.desc()).offset(offset).limit(limit).all()
+    return [DailyControlLogResponse.model_validate(log) for log in logs]
+
+
+@router.get(
+    "/daily-control-log/{log_date}",
+    response_model=DailyControlLogResponse,
+    summary="Get daily control log by date",
+    description="Returns the daily control log for a specific date. All authenticated users can read logs.",
+)
+async def get_daily_control_log(
+    log_date: date,
+    db: Session = Depends(get_db),
+    current_user: user_models.User = Depends(get_current_active_user),
+) -> DailyControlLogResponse:
+    """
+    Get the daily control log for a specific date.
+    
+    All authenticated users (Contractor, Engineer, Manager, Admin) can read logs.
+    Records are immutable - no update or delete operations available.
+    """
+    heap_config = db.query(HeapConfig).first()
+    if not heap_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HeapConfig not found."
+        )
+    
+    log = db.query(DailyControlLog).filter(
+        DailyControlLog.heap_config_id == heap_config.id,
+        DailyControlLog.log_date == log_date,
+    ).first()
+    
+    if not log:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No daily control log found for {log_date}."
+        )
+    
+    return DailyControlLogResponse.model_validate(log)

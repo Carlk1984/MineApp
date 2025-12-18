@@ -163,3 +163,52 @@ class BenchmarkChangeLog(Base):
     
     benchmark_config = relationship("BenchmarkConfig", foreign_keys=[benchmark_config_id])
     changer = relationship("User", foreign_keys=[changed_by])
+
+
+class DailyControlLog(Base):
+    """
+    Daily control log for heap leaching operations.
+    
+    Captures minimum operational measurements required to control heap leaching.
+    Records are IMMUTABLE after submission - no edits or deletions permitted.
+    
+    Access Control:
+    - Contractor role: may create new records only
+    - Engineer/Management/Admin roles: read-only access
+    
+    One record per calendar day per heap.
+    """
+    __tablename__ = "daily_control_logs"
+    
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    heap_config_id = Column(String(36), ForeignKey("heap_configs.id"), nullable=False, index=True)
+    
+    log_date = Column(Date, nullable=False, index=True)
+    area_irrigated_m2 = Column(Float, nullable=False)
+    flow_m3_per_hr = Column(Float, nullable=False)
+    irrigation_hours = Column(Float, nullable=False)
+    applied_cn_ppm = Column(Float, nullable=False)
+    applied_ph = Column(Float, nullable=False)
+    pls_flow_m3 = Column(Float, nullable=False)
+    pls_au_mgL = Column(Float, nullable=False)
+    pond_freeboard_m = Column(Float, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    
+    heap_config = relationship("HeapConfig", foreign_keys=[heap_config_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    
+    __table_args__ = (
+        UniqueConstraint("heap_config_id", "log_date", name="uq_daily_control_log_heap_date"),
+        CheckConstraint("area_irrigated_m2 >= 0", name="check_area_irrigated_non_negative"),
+        CheckConstraint("flow_m3_per_hr >= 0", name="check_flow_non_negative"),
+        CheckConstraint("irrigation_hours >= 0", name="check_irrigation_hours_non_negative"),
+        CheckConstraint("irrigation_hours <= 24", name="check_irrigation_hours_max_24"),
+        CheckConstraint("applied_cn_ppm >= 0", name="check_applied_cn_non_negative"),
+        CheckConstraint("applied_ph >= 0", name="check_applied_ph_min"),
+        CheckConstraint("applied_ph <= 14", name="check_applied_ph_max"),
+        CheckConstraint("pls_flow_m3 >= 0", name="check_pls_flow_non_negative"),
+        CheckConstraint("pls_au_mgL >= 0", name="check_pls_au_non_negative"),
+        CheckConstraint("pond_freeboard_m >= 0", name="check_pond_freeboard_non_negative"),
+    )
